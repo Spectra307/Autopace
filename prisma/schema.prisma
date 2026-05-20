@@ -1,0 +1,426 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum UserRole {
+  ADMIN
+  AGENT
+  MANAGER
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DELETED
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  PENDING
+  INACTIVE
+}
+
+enum IntegrationProvider {
+  ZAPIER
+  SLACK
+  GOOGLE_CALENDAR
+  SALESFORCE
+  MICROSOFT_GRAPH
+}
+
+enum IntegrationStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum TemplateStatus {
+  ACTIVE
+  DRAFT
+  ARCHIVED
+}
+
+enum VersionStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+enum WorkflowRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum StepType {
+  TRIGGER
+  ACTION
+  CONDITION
+  NOTIFICATION
+}
+
+enum StepStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+enum WorkflowEventType {
+  RUN_STARTED
+  STEP_COMPLETED
+  STEP_FAILED
+  HOOK_RECEIVED
+  NOTIFICATION_SENT
+}
+
+enum ErrorSeverity {
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+enum DocumentType {
+  POLICY
+  TEMPLATE
+  CONTRACT
+  NOTE
+}
+
+enum DocumentStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum BillingProvider {
+  STRIPE
+  PAYPAL
+}
+
+enum BillingCustomerStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  TRIALING
+}
+
+enum PurchaseStatus {
+  COMPLETED
+  REFUNDED
+  PENDING
+}
+
+model Organization {
+  id                Int                 @id @default(autoincrement())
+  slug              String              @unique
+  name              String
+  description       String?
+  industry          String?
+  status            OrganizationStatus  @default(ACTIVE)
+  isActive          Boolean             @default(true)
+  billingCustomer   BillingCustomer?    @relation("OrganizationBillingCustomer")
+  billingCustomerId Int?
+  memberships       OrganizationMember[]
+  integrations      Integration[]
+  workflowTemplates WorkflowTemplate[]
+  workflowRuns      WorkflowRun[]
+  documents         Document[]
+  workflowEvents    WorkflowEvent[]
+  automationErrors  AutomationError[]
+  templatePurchases TemplatePurchase[]
+  subscriptions     Subscription[]
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@map("organizations")
+}
+
+model User {
+  id              Int                 @id @default(autoincrement())
+  email           String              @unique
+  name            String
+  role            UserRole            @default(AGENT)
+  status          UserStatus          @default(ACTIVE)
+  avatarUrl       String?
+  lastLoginAt     DateTime?
+  memberships     OrganizationMember[]
+  runsInitiated   WorkflowRun[]       @relation("RunInitiator")
+  documents       Document[]
+  templatePurchases TemplatePurchase[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@map("users")
+}
+
+model OrganizationMember {
+  id             Int               @id @default(autoincrement())
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  organizationId Int
+  user           User              @relation(fields: [userId], references: [id])
+  userId         Int
+  role           MemberRole        @default(MEMBER)
+  status         MembershipStatus  @default(ACTIVE)
+  joinedAt       DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model Integration {
+  id              Int                 @id @default(autoincrement())
+  organization    Organization        @relation(fields: [organizationId], references: [id])
+  organizationId  Int
+  provider        IntegrationProvider
+  name            String
+  status          IntegrationStatus  @default(ACTIVE)
+  config          Json
+  installedAt     DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  oauthTokens     OauthToken[]
+
+  @@index([organizationId, provider])
+  @@map("integrations")
+}
+
+model OauthToken {
+  id             Int          @id @default(autoincrement())
+  integration    Integration  @relation(fields: [integrationId], references: [id])
+  integrationId  Int
+  provider       String
+  accessToken    String
+  refreshToken   String?
+  expiresAt      DateTime?
+  scope          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([integrationId])
+  @@map("oauth_tokens")
+}
+
+model WorkflowTemplate {
+  id               Int                       @id @default(autoincrement())
+  organization     Organization              @relation(fields: [organizationId], references: [id])
+  organizationId   Int
+  name             String
+  description      String?
+  category         String?
+  status           TemplateStatus           @default(ACTIVE)
+  defaultVersion   WorkflowTemplateVersion?  @relation("DefaultTemplateVersion", fields: [defaultVersionId], references: [id])
+  defaultVersionId Int?                    @unique
+  versions         WorkflowTemplateVersion[]
+  purchases        TemplatePurchase[]
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+
+  @@index([organizationId, status])
+  @@map("workflow_templates")
+}
+
+model WorkflowTemplateVersion {
+  id             Int                  @id @default(autoincrement())
+  template       WorkflowTemplate     @relation(fields: [templateId], references: [id])
+  templateId     Int
+  versionNumber  Int
+  title          String
+  changelog      String?
+  content        Json
+  status         VersionStatus        @default(PUBLISHED)
+  isPublished    Boolean              @default(true)
+  publishedAt    DateTime?
+  runs           WorkflowRun[]
+  purchases      TemplatePurchase[]
+  defaultForTemplate WorkflowTemplate? @relation("DefaultTemplateVersion")
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@unique([templateId, versionNumber])
+  @@index([templateId, status])
+  @@map("workflow_template_versions")
+}
+
+model WorkflowRun {
+  id                Int                     @id @default(autoincrement())
+  organization      Organization            @relation(fields: [organizationId], references: [id])
+  organizationId    Int
+  templateVersion   WorkflowTemplateVersion @relation(fields: [templateVersionId], references: [id])
+  templateVersionId Int
+  initiatedBy       User?                   @relation("RunInitiator", fields: [initiatedById], references: [id])
+  initiatedById     Int?
+  title             String
+  status            WorkflowRunStatus       @default(PENDING)
+  metadata          Json?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  steps             WorkflowStep[]
+  events            WorkflowEvent[]
+  errors            AutomationError[]
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@index([organizationId, status])
+  @@index([templateVersionId, status])
+  @@map("workflow_runs")
+}
+
+model WorkflowStep {
+  id           Int           @id @default(autoincrement())
+  run          WorkflowRun   @relation(fields: [runId], references: [id])
+  runId        Int
+  name         String
+  stepType     StepType
+  status       StepStatus    @default(PENDING)
+  sequence     Int
+  input        Json?
+  output       Json?
+  errorMessage String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errors       AutomationError[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([runId, status])
+  @@map("workflow_steps")
+}
+
+model WorkflowEvent {
+  id             Int               @id @default(autoincrement())
+  run            WorkflowRun       @relation(fields: [runId], references: [id])
+  runId          Int
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  organizationId Int
+  eventType      WorkflowEventType
+  payload        Json
+  occurredAt     DateTime          @default(now())
+  createdAt      DateTime          @default(now())
+
+  @@index([runId, eventType])
+  @@map("workflow_events")
+}
+
+model AutomationError {
+  id             Int              @id @default(autoincrement())
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  organizationId Int
+  run            WorkflowRun?     @relation(fields: [runId], references: [id])
+  runId          Int?
+  step           WorkflowStep?    @relation(fields: [stepId], references: [id])
+  stepId         Int?
+  code           String
+  message        String
+  details        Json?
+  severity       ErrorSeverity    @default(ERROR)
+  resolvedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([organizationId, runId])
+  @@map("automation_errors")
+}
+
+model Document {
+  id             Int              @id @default(autoincrement())
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  organizationId Int
+  owner          User?            @relation(fields: [ownerId], references: [id])
+  ownerId        Int?
+  title          String
+  type           DocumentType
+  status         DocumentStatus   @default(ACTIVE)
+  content        String
+  metadata       Json?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([organizationId, status])
+  @@map("documents")
+}
+
+model BillingCustomer {
+  id              Int                   @id @default(autoincrement())
+  organization    Organization          @relation("OrganizationBillingCustomer", fields: [organizationId], references: [id])
+  organizationId  Int                   @unique
+  provider        BillingProvider
+  customerId      String                @unique
+  status          BillingCustomerStatus @default(ACTIVE)
+  metadata        Json?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  subscriptions   Subscription[]
+
+  @@map("billing_customers")
+}
+
+model Subscription {
+  id                 Int                 @id @default(autoincrement())
+  billingCustomer    BillingCustomer     @relation(fields: [billingCustomerId], references: [id])
+  billingCustomerId  Int
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  organizationId     Int
+  plan               String
+  status             SubscriptionStatus  @default(ACTIVE)
+  priceCents         Int
+  currency           String              @default("USD")
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelledAt        DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([billingCustomerId, plan])
+  @@index([organizationId, status])
+  @@map("subscriptions")
+}
+
+model TemplatePurchase {
+  id                Int                     @id @default(autoincrement())
+  organization      Organization            @relation(fields: [organizationId], references: [id])
+  organizationId    Int
+  buyer             User                    @relation(fields: [buyerId], references: [id])
+  buyerId           Int
+  template          WorkflowTemplate        @relation(fields: [templateId], references: [id])
+  templateId        Int
+  version           WorkflowTemplateVersion @relation(fields: [versionId], references: [id])
+  versionId         Int
+  amountCents       Int
+  currency          String                  @default("USD")
+  status            PurchaseStatus          @default(COMPLETED)
+  purchasedAt       DateTime                @default(now())
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@index([organizationId, templateId, buyerId])
+  @@map("template_purchases")
+}
