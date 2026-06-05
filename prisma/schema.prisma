@@ -39,11 +39,15 @@ enum MembershipStatus {
 }
 
 enum IntegrationProvider {
-  ZAPIER
+  ZILLOW
+  FOLLOW_UP_BOSS
+  DOTLOOP
+  GMAIL
+  OUTLOOK
   SLACK
   GOOGLE_CALENDAR
-  SALESFORCE
-  MICROSOFT_GRAPH
+  ZAPIER
+  STRIPE
 }
 
 enum IntegrationStatus {
@@ -137,6 +141,14 @@ enum PurchaseStatus {
   PENDING
 }
 
+enum WebhookEventStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  DLQED
+}
+
 model Organization {
   id                Int                 @id @default(autoincrement())
   slug              String              @unique
@@ -146,13 +158,13 @@ model Organization {
   status            OrganizationStatus  @default(ACTIVE)
   isActive          Boolean             @default(true)
   billingCustomer   BillingCustomer?    @relation("OrganizationBillingCustomer")
-  billingCustomerId Int?
   memberships       OrganizationMember[]
   integrations      Integration[]
   workflowTemplates WorkflowTemplate[]
   workflowRuns      WorkflowRun[]
   documents         Document[]
   workflowEvents    WorkflowEvent[]
+  webhookEvents     WebhookEvent[]
   automationErrors  AutomationError[]
   templatePurchases TemplatePurchase[]
   subscriptions     Subscription[]
@@ -199,7 +211,7 @@ model OrganizationMember {
 
 model Integration {
   id              Int                 @id @default(autoincrement())
-  organization    Organization        @relation(fields: [organizationId], references: [id])
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId  Int
   provider        IntegrationProvider
   name            String
@@ -208,24 +220,29 @@ model Integration {
   installedAt     DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
   oauthTokens     OauthToken[]
+  webhookEvents   WebhookEvent[]
 
-  @@index([organizationId, provider])
+  @@index([organizationId, provider, status])
   @@map("integrations")
 }
 
 model OauthToken {
-  id             Int          @id @default(autoincrement())
-  integration    Integration  @relation(fields: [integrationId], references: [id])
-  integrationId  Int
-  provider       String
-  accessToken    String
-  refreshToken   String?
-  expiresAt      DateTime?
-  scope          String?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id                    Int          @id @default(autoincrement())
+  integration           Integration  @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  integrationId         Int
+  provider              String
+  encryptedAccessToken  String
+  encryptedRefreshToken String?
+  tokenHash             String
+  scopes                String?
+  expiresAt             DateTime?
+  revokedAt             DateTime?
+  lastUsedAt            DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 
   @@index([integrationId])
+  @@index([tokenHash])
   @@map("oauth_tokens")
 }
 
@@ -272,12 +289,23 @@ model WorkflowTemplateVersion {
 
 model WorkflowRun {
   id                Int                     @id @default(autoincrement())
-  organization      Organization            @relation(fields: [organizationId], references: [id])
+  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId    Int
-  templateVersion   WorkflowTemplateVersion @relation(fields: [templateVersionId], references: [id])
+  templateVersion   WorkflowTemplateVersion @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
   templateVersionId Int
-  initiatedBy       User?                   @relation("RunInitiator", fields: [initiatedById], references: [id])
+  initiatedBy       User?                   @relation("RunInitiator", fields: [initiatedById], references: [id], onDelete: SetNull)
   initiatedById     Int?
+  idempotencyKey    String?                 @unique
+  externalWorkflowId String?
+  temporalWorkflowId String?
+  temporalRunId     String?
+  attempt           Int                     @default(1)
+  maxAttempts       Int                     @default(1)
+  nextRetryAt       DateTime?
+  lastHeartbeatAt   DateTime?
+  pausedAt          DateTime?
+  cancelledAt       DateTime?
+  failureCategory   String?
   title             String
   status            WorkflowRunStatus       @default(PENDING)
   metadata          Json?
@@ -289,14 +317,17 @@ model WorkflowRun {
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
 
+  @@unique([organizationId, idempotencyKey])
   @@index([organizationId, status])
   @@index([templateVersionId, status])
+  @@index([organizationId, externalWorkflowId])
+  @@index([organizationId, temporalRunId])
   @@map("workflow_runs")
 }
 
 model WorkflowStep {
   id           Int           @id @default(autoincrement())
-  run          WorkflowRun   @relation(fields: [runId], references: [id])
+  run          WorkflowRun   @relation(fields: [runId], references: [id], onDelete: Restrict)
   runId        Int
   name         String
   stepType     StepType
@@ -317,9 +348,9 @@ model WorkflowStep {
 
 model WorkflowEvent {
   id             Int               @id @default(autoincrement())
-  run            WorkflowRun       @relation(fields: [runId], references: [id])
+  run            WorkflowRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
   runId          Int
-  organization   Organization      @relation(fields: [organizationId], references: [id])
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId Int
   eventType      WorkflowEventType
   payload        Json
@@ -327,16 +358,45 @@ model WorkflowEvent {
   createdAt      DateTime          @default(now())
 
   @@index([runId, eventType])
+  @@index([organizationId, eventType])
   @@map("workflow_events")
+}
+
+model WebhookEvent {
+  id                Int                @id @default(autoincrement())
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId    Int
+  integration       Integration?       @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  integrationId     Int?
+  eventType         String
+  payload           Json
+  hmacSignature     String?
+  hmacVerified      Boolean            @default(false)
+  deduplicationKey  String?
+  status            WebhookEventStatus @default(PENDING)
+  attempts          Int                @default(0)
+  maxAttempts       Int                @default(5)
+  nextRetryAt       DateTime?
+  processedAt       DateTime?
+  lastError         String?
+  dlqHandledAt      DateTime?
+  receivedAt        DateTime           @default(now())
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([organizationId, status])
+  @@index([organizationId, integrationId])
+  @@index([organizationId, deduplicationKey])
+  @@map("webhook_events")
 }
 
 model AutomationError {
   id             Int              @id @default(autoincrement())
-  organization   Organization     @relation(fields: [organizationId], references: [id])
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId Int
-  run            WorkflowRun?     @relation(fields: [runId], references: [id])
+  run            WorkflowRun?     @relation(fields: [runId], references: [id], onDelete: SetNull)
   runId          Int?
-  step           WorkflowStep?    @relation(fields: [stepId], references: [id])
+  step           WorkflowStep?    @relation(fields: [stepId], references: [id], onDelete: SetNull)
   stepId         Int?
   code           String
   message        String
@@ -352,9 +412,9 @@ model AutomationError {
 
 model Document {
   id             Int              @id @default(autoincrement())
-  organization   Organization     @relation(fields: [organizationId], references: [id])
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId Int
-  owner          User?            @relation(fields: [ownerId], references: [id])
+  owner          User?            @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   ownerId        Int?
   title          String
   type           DocumentType
@@ -370,29 +430,35 @@ model Document {
 
 model BillingCustomer {
   id              Int                   @id @default(autoincrement())
-  organization    Organization          @relation("OrganizationBillingCustomer", fields: [organizationId], references: [id])
+  organization    Organization          @relation("OrganizationBillingCustomer", fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId  Int                   @unique
   provider        BillingProvider
   customerId      String                @unique
+  stripeCustomerId String?              @unique
   status          BillingCustomerStatus @default(ACTIVE)
   metadata        Json?
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
   subscriptions   Subscription[]
 
+  @@index([organizationId, stripeCustomerId])
   @@map("billing_customers")
 }
 
 model Subscription {
   id                 Int                 @id @default(autoincrement())
-  billingCustomer    BillingCustomer     @relation(fields: [billingCustomerId], references: [id])
+  billingCustomer    BillingCustomer     @relation(fields: [billingCustomerId], references: [id], onDelete: Restrict)
   billingCustomerId  Int
-  organization       Organization        @relation(fields: [organizationId], references: [id])
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId     Int
   plan               String
   status             SubscriptionStatus  @default(ACTIVE)
   priceCents         Int
   currency           String              @default("USD")
+  stripeSubscriptionId String?
+  stripePriceId      String?
+  stripeProductId    String?
+  checkoutSessionId  String?
   currentPeriodStart DateTime
   currentPeriodEnd   DateTime
   cancelledAt        DateTime?
@@ -401,18 +467,19 @@ model Subscription {
 
   @@unique([billingCustomerId, plan])
   @@index([organizationId, status])
+  @@index([organizationId, stripeSubscriptionId])
   @@map("subscriptions")
 }
 
 model TemplatePurchase {
   id                Int                     @id @default(autoincrement())
-  organization      Organization            @relation(fields: [organizationId], references: [id])
+  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId    Int
-  buyer             User                    @relation(fields: [buyerId], references: [id])
-  buyerId           Int
-  template          WorkflowTemplate        @relation(fields: [templateId], references: [id])
+  buyer             User?                   @relation(fields: [buyerId], references: [id], onDelete: SetNull)
+  buyerId           Int?
+  template          WorkflowTemplate        @relation(fields: [templateId], references: [id], onDelete: Restrict)
   templateId        Int
-  version           WorkflowTemplateVersion @relation(fields: [versionId], references: [id])
+  version           WorkflowTemplateVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
   versionId         Int
   amountCents       Int
   currency          String                  @default("USD")
