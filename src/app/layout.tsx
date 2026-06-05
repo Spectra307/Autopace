@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+// @ts-ignore: Allow importing global CSS without type declarations
 import "./globals.css";
 
 const geistSans = localFont({
@@ -26,6 +27,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
+      
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
